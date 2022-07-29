@@ -164,46 +164,62 @@ function DeployStressPackage(
         if ($LASTEXITCODE) { return }
     }
 
-    $imageTag = "${registryName}.azurecr.io"
+    $imageTagBase = "${registryName}.azurecr.io"
     if ($repositoryBase) {
-        $imageTag += "/$repositoryBase"
+        $imageTagBase += "/$repositoryBase"
     }
-    $imageTag += "/$($pkg.Namespace)/$($pkg.ReleaseName):${deployId}"
+    $imageTagBase += "/$($pkg.Namespace)/$($pkg.ReleaseName):${deployId}"
 
-    $dockerFilePath = if ($pkg.Dockerfile) {
-        Join-Path $pkg.Directory $pkg.Dockerfile
-    } else {
-        "$($pkg.Directory)/Dockerfile"
-    }
-    $dockerFilePath = [System.IO.Path]::GetFullPath($dockerFilePath)
-
-    if ($pushImages -and (Test-Path $dockerFilePath)) {
-        Write-Host "Building and pushing stress test docker image '$imageTag'"
-        $dockerFile = Get-ChildItem $dockerFilePath
-        $dockerBuildFolder = if ($pkg.DockerBuildDir) {
-            Join-Path $pkg.Directory $pkg.DockerBuildDir
-        } else {
-            $dockerFile.DirectoryName
+    $dockerFilePaths =@()
+    
+    $genValFile = Join-Path $pkg.Dockerfile "generatedValues.yaml"
+    if (Test-Path $genValFile) {
+        $scenarios = (Get-Content $genValFile -Raw | ConvertFrom-Yaml).Scenarios
+        foreach ($scenario in $scenarios) {
+            $dockerfilePath = $scenario.image
+            $dockerFilePath = [System.IO.Path]::GetFullPath($dockerFilePath)
+            $dockerFilePaths += $dockerFilePath
         }
-        $dockerBuildFolder = [System.IO.Path]::GetFullPath($dockerBuildFolder).Trim()
-
-        Run docker build -t $imageTag -f $dockerFile $dockerBuildFolder
-        if ($LASTEXITCODE) { return }
-
-        Write-Host "`nContainer image '$imageTag' successfully built. To run commands on the container locally:" -ForegroundColor Blue
-        Write-Host "  docker run -it $imageTag" -ForegroundColor DarkBlue
-        Write-Host "  docker run -it $imageTag <shell, e.g. 'bash' 'pwsh' 'sh'>" -ForegroundColor DarkBlue
-        Write-Host "To show installed container images:" -ForegroundColor Blue
-        Write-Host "  docker image ls" -ForegroundColor DarkBlue
-        Write-Host "To show running containers:" -ForegroundColor Blue
-        Write-Host "  docker ps" -ForegroundColor DarkBlue
-
-        Run docker push $imageTag
-        if ($LASTEXITCODE) {
-            if ($login) {
-                Write-Warning "If docker push is failing due to authentication issues, try calling this script with '-Login'"
+    } else {
+        if ($pkg.Dockerfile) {
+            $dockerFilePath = Join-Path $pkg.Directory $pkg.Dockerfile
+        } else {
+            $dockerFilePath = "$($pkg.Directory)/Dockerfile"
+        }
+        $dockerFilePath = [System.IO.Path]::GetFullPath($dockerFilePath)
+        $dockerFilePaths += $dockerFilePath
+    }
+    
+    if ($pushImages) {
+        foreach ($dockerFilePath in $dockerFilePaths) {
+            if (!(Test-Path $dockerFilePath)) {continue}
+            Write-Host "Building and pushing stress test docker image '$imageTag'"
+            $dockerFile = Get-ChildItem $dockerFilePath
+            $dockerBuildFolder = if ($pkg.DockerBuildDir) {
+                Join-Path $pkg.Directory $pkg.DockerBuildDir
+            } else {
+                $dockerFile.DirectoryName
             }
-            return
+            $dockerBuildFolder = [System.IO.Path]::GetFullPath($dockerBuildFolder).Trim()
+
+            Run docker build -t $imageTag -f $dockerFile $dockerBuildFolder
+            if ($LASTEXITCODE) { return }
+
+            Write-Host "`nContainer image '$imageTag' successfully built. To run commands on the container locally:" -ForegroundColor Blue
+            Write-Host "  docker run -it $imageTag" -ForegroundColor DarkBlue
+            Write-Host "  docker run -it $imageTag <shell, e.g. 'bash' 'pwsh' 'sh'>" -ForegroundColor DarkBlue
+            Write-Host "To show installed container images:" -ForegroundColor Blue
+            Write-Host "  docker image ls" -ForegroundColor DarkBlue
+            Write-Host "To show running containers:" -ForegroundColor Blue
+            Write-Host "  docker ps" -ForegroundColor DarkBlue
+
+            Run docker push $imageTag
+            if ($LASTEXITCODE) {
+                if ($login) {
+                    Write-Warning "If docker push is failing due to authentication issues, try calling this script with '-Login'"
+                }
+                return
+            }
         }
     }
 
@@ -216,7 +232,8 @@ function DeployStressPackage(
         -n $pkg.Namespace `
         --install `
         --set image=$imageTag `
-        --set stress-test-addons.env=$environment
+        --set stress-test-addons.env=$environment `
+        --values generatedValues.yaml
     if ($LASTEXITCODE) {
         # Issues like 'UPGRADE FAILED: another operation (install/upgrade/rollback) is in progress'
         # can be the result of cancelled `upgrade` operations (e.g. ctrl-c).
